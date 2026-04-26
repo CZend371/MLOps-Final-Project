@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# Model artifacts
+models/
+*.pkl
+
+# Data files
+data/
+
+# Airflow runtime
+airflow_home/
+airflow.cfg
+airflow.db
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/

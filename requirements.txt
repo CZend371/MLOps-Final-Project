@@ -1,0 +1,12 @@
+# Pin Airflow with constraints for Python 3.12
+apache-airflow==2.10.2 \
+  --constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.10.2/constraints-3.12.txt
+
+# ML / Data dependencies
+scikit-learn==1.5.2
+pandas==2.2.2
+joblib==1.4.2
+numpy==1.26.4
+
+# AWS integration
+boto3==1.35.36
