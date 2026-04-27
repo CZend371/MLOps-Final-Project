@@ -71,12 +71,10 @@ cp .env.example .env
 # Edit .env and fill in S3_BUCKET_NAME and SQS_QUEUE_URL
 ```
 
-Export them in your current shell:
+Export them in your current shell (or use the single command below to load from `.env`):
 
 ```bash
-export S3_BUCKET_NAME=<your-bucket-name>
-export SQS_QUEUE_URL=<your-sqs-queue-url>
-export AWS_DEFAULT_REGION=us-east-1
+export $(grep -v '#' .env | xargs)
 ```
 
 ## Airflow Setup
@@ -172,21 +170,25 @@ docker push \
   <account-id>.dkr.ecr.us-east-1.amazonaws.com/sqs-consumer:latest
 ```
 
-### 3. Update the Kubernetes Manifest
+### 3. Deploy to Kubernetes
 
-Edit `k8s/consumer-deployment.yaml` and replace the placeholder values:
-
-| Placeholder | Value |
-|-------------|-------|
-| `<PLACEHOLDER_ECR_IMAGE_URI>` | Your full ECR image URI |
-| `<PLACEHOLDER_S3_BUCKET_NAME>` | Your S3 bucket name |
-| `<PLACEHOLDER_SQS_QUEUE_URL>` | Your SQS queue URL |
-
-### 4. Deploy to Kubernetes
+`k8s/consumer-deployment.yaml` uses `${VAR}` placeholders so your account-specific values are never committed to git. Deploy by substituting your `.env` values at apply time using `envsubst`:
 
 ```bash
-kubectl apply -f k8s/consumer-deployment.yaml
+# Export all values from .env into the current shell
+export $(grep -v '#' .env | xargs)
+
+# Substitute and apply in one step
+envsubst < k8s/consumer-deployment.yaml | kubectl apply -f -
 ```
+
+The three variables the manifest reads from your environment are:
+
+| Variable | Description |
+|----------|-------------|
+| `ECR_IMAGE_URI` | Full ECR image URI (e.g. `<account>.dkr.ecr.us-east-1.amazonaws.com/ml-ops/final-project-cz:latest`) |
+| `S3_BUCKET_NAME` | Your S3 bucket name |
+| `SQS_QUEUE_URL` | Your SQS queue URL |
 
 Verify the pod is running:
 
