@@ -42,7 +42,7 @@ MLOps-Final-Project/
 
 ## Prerequisites
 
-- Python 3.10+ (tested on 3.10; compatible with 3.11 and 3.12 — update the Airflow constraints URL in `requirements.txt` to match your version)
+- Python 3.11 (compatible with 3.10 and 3.12 — update the Airflow constraints URL in `requirements.txt` to match your version)
 - AWS CLI configured (`aws configure`) with access to S3 and SQS
 - Docker (for building the consumer image)
 - `kubectl` + a running Kubernetes cluster (e.g. EKS, Minikube)
@@ -82,7 +82,7 @@ export $(grep -v '#' .env | xargs)
 ### 1. Create and Activate a Virtual Environment
 
 ```bash
-python3.10 -m venv venv
+python3.11 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```

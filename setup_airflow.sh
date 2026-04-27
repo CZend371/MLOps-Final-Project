@@ -49,7 +49,7 @@ if [[ -d "$VENV_DIR" ]]; then
   echo "Activated virtual environment: $VENV_DIR"
 else
   echo "Warning: no virtual environment found at $VENV_DIR"
-  echo "Create one with: python3.10 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+  echo "Create one with: python3.11 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
 fi
 
 # Initialize or migrate Airflow metadata DB
