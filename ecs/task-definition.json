@@ -1,0 +1,28 @@
+{
+  "family": "sqs-consumer",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "containerDefinitions": [
+    {
+      "name": "consumer",
+      "image": "${ECR_IMAGE_URI}",
+      "essential": true,
+      "environment": [
+        { "name": "S3_BUCKET_NAME",      "value": "${S3_BUCKET_NAME}" },
+        { "name": "SQS_QUEUE_URL",        "value": "${SQS_QUEUE_URL}" },
+        { "name": "AWS_DEFAULT_REGION",   "value": "us-east-1" },
+        { "name": "S3_MODEL_KEY",         "value": "model.pkl" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group":         "/ecs/sqs-consumer",
+          "awslogs-region":        "us-east-1",
+          "awslogs-stream-prefix": "consumer"
+        }
+      }
+    }
+  ]
+}

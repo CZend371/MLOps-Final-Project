@@ -1,17 +1,24 @@
 # MLOps Final Project
 
-A distributed machine learning system that trains a breast cancer classifier and processes inference jobs asynchronously using Airflow, S3, SQS, and Kubernetes.
+A distributed machine learning system that trains a breast cancer classifier and processes inference jobs asynchronously using Airflow, S3, SQS, and ECS.
 
 ## Architecture
 
 ```
-Airflow DAG
-  └─► load_and_split_data
-        └─► train_model  (LogisticRegression on breast cancer dataset)
-              └─► upload_model_to_s3  (model.pkl → S3)
-                    └─► publish_to_sqs  (one message per test record)
+Training Pipeline (Airflow DAG: training_pipeline)
+  └─► train_and_upload
+        ├─ loads breast cancer dataset
+        ├─ splits 80/20 (random_state=42)
+        ├─ trains LogisticRegression
+        └─ uploads model.pkl → S3
 
-SQS Queue ──► Kubernetes Consumer Pods (1..N replicas)
+Inference Pipeline (Airflow DAG: inference_pipeline)
+  └─► publish_test_records
+        ├─ loads breast cancer dataset
+        ├─ splits 80/20 (same random_state=42)
+        └─ publishes one SQS message per test record (~114 messages)
+
+SQS Queue ──► ECS Fargate Tasks (1..N consumers)
                     ├─ loads model.pkl from S3 on startup
                     ├─ runs model.predict() per message
                     └─ writes predictions/sample_NNN.json → S3
@@ -22,18 +29,19 @@ SQS Queue ──► Kubernetes Consumer Pods (1..N replicas)
 ```
 MLOps-Final-Project/
 ├── dags/
-│   └── ml_pipeline_dag.py       # Airflow DAG (training + SQS publish)
+│   ├── training_dag.py          # Airflow DAG: train model and upload to S3
+│   └── inference_dag.py         # Airflow DAG: publish test records to SQS
 ├── src/
 │   └── ml_pipeline/
-│       ├── data.py              # Dataset loading, splitting, record generation
+│       ├── data.py              # Dataset loading and splitting
 │       ├── model.py             # Training, serialization, S3 upload
 │       └── queue.py             # SQS message publishing
 ├── consumer/
 │   ├── consumer.py              # SQS consumer (polls, infers, writes to S3)
 │   ├── requirements.txt
 │   └── Dockerfile
-├── k8s/
-│   └── consumer-deployment.yaml # Kubernetes Deployment manifest
+├── ecs/
+│   └── task-definition.json     # ECS Fargate task definition (envsubst placeholders)
 ├── .env.example                 # Environment variable template
 ├── requirements.txt             # Airflow + pipeline deps
 ├── setup_airflow.sh             # Local Airflow bootstrap
@@ -43,10 +51,9 @@ MLOps-Final-Project/
 ## Prerequisites
 
 - Python 3.11 (compatible with 3.10 and 3.12 — update the Airflow constraints URL in `requirements.txt` to match your version)
-- AWS CLI configured (`aws configure`) with access to S3 and SQS
+- AWS CLI configured (`aws configure`) with access to S3, SQS, ECR, and ECS
 - Docker (for building the consumer image)
-- `kubectl` + a running Kubernetes cluster (e.g. EKS, Minikube)
-- IAM permissions: `s3:PutObject`, `s3:GetObject`, `sqs:SendMessage`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`
+- IAM permissions: `s3:PutObject`, `s3:GetObject`, `sqs:SendMessage`, `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `ecr:*`, `ecs:*`
 
 ## AWS Setup
 
@@ -68,10 +75,10 @@ Copy the returned `QueueUrl` — you will need it below.
 
 ```bash
 cp .env.example .env
-# Edit .env and fill in S3_BUCKET_NAME and SQS_QUEUE_URL
+# Edit .env and fill in S3_BUCKET_NAME, SQS_QUEUE_URL, and ECR_IMAGE_URI
 ```
 
-Export them in your current shell (or use the single command below to load from `.env`):
+Load them into your shell:
 
 ```bash
 export $(grep -v '#' .env | xargs)
@@ -125,26 +132,33 @@ airflow scheduler
 
 Open the Airflow UI at [http://localhost:8080](http://localhost:8080).
 
-### 5. Run the Pipeline DAG
+### 5. Run the DAGs
 
-In the UI, find the DAG `ml_training_and_inference_pipeline` and trigger it manually.
+There are two independent DAGs. Run them in order: training first, then inference.
 
-Or via CLI:
+**Step 1 — Training Pipeline**
+
+In the Airflow UI trigger `training_pipeline`, or via CLI:
 
 ```bash
-airflow dags trigger ml_training_and_inference_pipeline
+airflow dags trigger training_pipeline
 ```
-
-The DAG runs four tasks in order:
 
 | Task | Description |
 |------|-------------|
-| `load_and_split_data` | Loads breast cancer dataset, splits 80/20, pushes to XCom |
-| `train_model` | Trains LogisticRegression, saves `models/model.pkl` locally |
-| `upload_model_to_s3` | Uploads `model.pkl` to `s3://<bucket>/model.pkl` |
-| `publish_to_sqs` | Sends one SQS message per test record (~114 messages) |
+| `train_and_upload` | Loads dataset, trains LogisticRegression, saves `models/model.pkl`, uploads to S3 |
 
-## Consumer (Kubernetes)
+**Step 2 — Inference Pipeline** (run after training completes)
+
+```bash
+airflow dags trigger inference_pipeline
+```
+
+| Task | Description |
+|------|-------------|
+| `publish_test_records` | Loads dataset, splits identically to training, sends ~114 SQS messages |
+
+## Consumer (ECS)
 
 ### 1. Build the Docker Image
 
@@ -153,58 +167,78 @@ cd consumer/
 docker build -t sqs-consumer:latest .
 ```
 
-### 2. Push to a Container Registry
+### 2. Push to ECR
 
-**ECR example:**
 ```bash
-aws ecr create-repository --repository-name sqs-consumer --region us-east-1
+# Create the ECR repository (first time only)
+aws ecr create-repository --repository-name <your-repo-name> --region us-east-1
 
+# Authenticate Docker to ECR
 aws ecr get-login-password --region us-east-1 \
   | docker login --username AWS --password-stdin \
     <account-id>.dkr.ecr.us-east-1.amazonaws.com
 
+# Tag and push
 docker tag sqs-consumer:latest \
-  <account-id>.dkr.ecr.us-east-1.amazonaws.com/sqs-consumer:latest
+  <account-id>.dkr.ecr.us-east-1.amazonaws.com/<your-repo-name>:latest
 
 docker push \
-  <account-id>.dkr.ecr.us-east-1.amazonaws.com/sqs-consumer:latest
+  <account-id>.dkr.ecr.us-east-1.amazonaws.com/<your-repo-name>:latest
 ```
 
-### 3. Deploy to Kubernetes
+Add the full image URI to your `.env` as `ECR_IMAGE_URI`.
 
-`k8s/consumer-deployment.yaml` uses `${VAR}` placeholders so your account-specific values are never committed to git. Deploy by substituting your `.env` values at apply time using `envsubst`:
+### 3. Register the ECS Task Definition
+
+`ecs/task-definition.json` uses `${VAR}` placeholders so account-specific values are never committed to git.
 
 ```bash
-# Export all values from .env into the current shell
 export $(grep -v '#' .env | xargs)
-
-# Substitute and apply in one step
-envsubst < k8s/consumer-deployment.yaml | kubectl apply -f -
+envsubst < ecs/task-definition.json > /tmp/task-def.json
+aws ecs register-task-definition --cli-input-json file:///tmp/task-def.json
 ```
 
-The three variables the manifest reads from your environment are:
+### 4. Create an ECS Cluster (AWS Console)
 
-| Variable | Description |
-|----------|-------------|
-| `ECR_IMAGE_URI` | Full ECR image URI (e.g. `<account>.dkr.ecr.us-east-1.amazonaws.com/ml-ops/final-project-cz:latest`) |
-| `S3_BUCKET_NAME` | Your S3 bucket name |
-| `SQS_QUEUE_URL` | Your SQS queue URL |
+Go to **ECS → Clusters → Create Cluster** in the AWS Console. Choose **Fargate** as the infrastructure and name your cluster.
 
-Verify the pod is running:
+### 5. Run the Consumer Task
 
 ```bash
-kubectl get pods -l app=sqs-consumer
-kubectl logs -l app=sqs-consumer --follow
+# Run 1 consumer task
+aws ecs run-task \
+  --cluster <your-cluster-name> \
+  --task-definition sqs-consumer \
+  --launch-type FARGATE \
+  --count 1 \
+  --network-configuration \
+    "awsvpcConfiguration={subnets=[<your-subnet-id>],assignPublicIp=ENABLED}"
 ```
 
-### 5. Scale the Deployment
+### 6. Scale Up (run more consumers in parallel)
 
 ```bash
-kubectl scale deployment sqs-consumer --replicas=3
-kubectl get pods -l app=sqs-consumer
+# Run 3 consumer tasks simultaneously
+aws ecs run-task \
+  --cluster <your-cluster-name> \
+  --task-definition sqs-consumer \
+  --launch-type FARGATE \
+  --count 3 \
+  --network-configuration \
+    "awsvpcConfiguration={subnets=[<your-subnet-id>],assignPublicIp=ENABLED}"
 ```
 
-Multiple replicas will compete to pull messages from SQS. Because each prediction is written to a unique file (`predictions/sample_NNN.json`) and messages are deleted only after a successful S3 write, concurrent consumers process different records without conflicts.
+Multiple tasks will compete for SQS messages. Because each prediction is written to a unique S3 key (`predictions/sample_NNN.json`) and messages are deleted only after a successful write, concurrent tasks process different records without conflicts.
+
+### 7. View Logs
+
+Consumer logs are written to CloudWatch. View them in the AWS Console under:
+**CloudWatch → Log Groups → /ecs/sqs-consumer**
+
+Or via CLI:
+```bash
+aws logs tail /ecs/sqs-consumer --follow
+```
 
 ## Verifying Results
 
@@ -236,12 +270,14 @@ Expected format:
 aws s3 ls s3://<your-bucket-name>/predictions/ | wc -l
 ```
 
-The test set contains approximately 114 records (20% of 569), so you should see ~114 prediction files.
+The test set contains approximately 114 records (20% of 569), so you should see ~114 prediction files when all consumers have finished.
 
 ## Key Design Notes
 
-- **At-least-once delivery:** SQS messages are deleted only after the prediction is successfully written to S3. If the consumer crashes mid-processing, the SQS visibility timeout expires and the message becomes visible again for retry.
-- **No write conflicts:** Each prediction is stored at a unique S3 key (`predictions/<record_id>.json`), so multiple consumer replicas never overwrite each other.
-- **Long-polling:** The consumer uses `WaitTimeSeconds=20` to reduce SQS API calls and cost.
-- **Graceful shutdown:** The consumer catches `SIGTERM` (sent by Kubernetes during pod termination) and stops polling after finishing the current batch.
-- **Model loaded once:** The model is downloaded from S3 and deserialized once on pod startup, not per message, to minimize latency and S3 costs.
+- **Two independent DAGs:** `training_pipeline` and `inference_pipeline` are decoupled -- each loads and splits the dataset on its own. The split is identical because both use the same sklearn built-in dataset and `random_state=42`.
+- **No XCom:** each DAG is a single task, keeping the logic simple and debuggable.
+- **At-least-once delivery:** SQS messages are deleted only after the prediction is successfully written to S3. If a consumer task fails mid-processing, the SQS visibility timeout expires and the message becomes visible again for retry.
+- **No write conflicts:** each prediction is stored at a unique S3 key (`predictions/<record_id>.json`), so multiple ECS tasks never overwrite each other.
+- **Long-polling:** the consumer uses `WaitTimeSeconds=20` to reduce SQS API calls and cost.
+- **Graceful shutdown:** the consumer catches `SIGTERM` (sent by ECS during task termination) and stops polling after finishing the current batch.
+- **Model loaded once:** the model is downloaded from S3 and deserialized once on task startup, not per message.
