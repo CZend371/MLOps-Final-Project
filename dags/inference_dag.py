@@ -23,7 +23,7 @@ def _publish_test_records(**kwargs):
 
     records = [
         {"record_id": f"sample_{i:03d}", "features": row.tolist()}
-        for i, row in enumerate(X_test.itertuples(index=False))
+        for i, (_, row) in enumerate(X_test.iterrows())
     ]
 
     queue_url = os.environ["SQS_QUEUE_URL"]
