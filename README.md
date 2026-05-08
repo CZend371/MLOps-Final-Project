@@ -188,56 +188,29 @@ docker push \
 
 Add the full image URI to your `.env` as `ECR_IMAGE_URI`.
 
-### 3. Register the ECS Task Definition
+### 3. Configure the ECS Task Definition
 
-`ecs/task-definition.json` uses `${VAR}` placeholders so account-specific values are never committed to git.
+The ECS cluster, task definition, and service are all created via the AWS Console. When configuring the task definition container, add the following environment variables:
 
-```bash
-export $(grep -v '#' .env | xargs)
-envsubst < ecs/task-definition.json > /tmp/task-def.json
-aws ecs register-task-definition --cli-input-json file:///tmp/task-def.json
-```
+| Key | Value |
+|-----|-------|
+| `S3_BUCKET_NAME` | Your S3 bucket name (e.g. `mlops-final-project-cz`) |
+| `SQS_QUEUE_URL` | Your full SQS queue URL |
+| `AWS_DEFAULT_REGION` | `us-east-1` |
+| `S3_MODEL_KEY` | `model.pkl` |
 
-### 4. Create an ECS Cluster (AWS Console)
+### 4. Scale Up
 
-Go to **ECS → Clusters → Create Cluster** in the AWS Console. Choose **Fargate** as the infrastructure and name your cluster.
+To run multiple consumers in parallel, increase the **Number of tasks** when running the task. Each task independently polls SQS and processes messages. Because predictions are written to unique S3 keys (`predictions/sample_NNN.json`) and messages are deleted only after a successful write, concurrent tasks process different records without conflicts.
 
-### 5. Run the Consumer Task
+### 5. View Logs
 
-```bash
-# Run 1 consumer task
-aws ecs run-task \
-  --cluster <your-cluster-name> \
-  --task-definition sqs-consumer \
-  --launch-type FARGATE \
-  --count 1 \
-  --network-configuration \
-    "awsvpcConfiguration={subnets=[<your-subnet-id>],assignPublicIp=ENABLED}"
-```
-
-### 6. Scale Up (run more consumers in parallel)
-
-```bash
-# Run 3 consumer tasks simultaneously
-aws ecs run-task \
-  --cluster <your-cluster-name> \
-  --task-definition sqs-consumer \
-  --launch-type FARGATE \
-  --count 3 \
-  --network-configuration \
-    "awsvpcConfiguration={subnets=[<your-subnet-id>],assignPublicIp=ENABLED}"
-```
-
-Multiple tasks will compete for SQS messages. Because each prediction is written to a unique S3 key (`predictions/sample_NNN.json`) and messages are deleted only after a successful write, concurrent tasks process different records without conflicts.
-
-### 7. View Logs
-
-Consumer logs are written to CloudWatch. View them in the AWS Console under:
-**CloudWatch → Log Groups → /ecs/sqs-consumer**
+Consumer logs are written to CloudWatch automatically. View them in the AWS Console under:
+**CloudWatch → Log Groups → /ecs/\<your-log-group\>**
 
 Or via CLI:
 ```bash
-aws logs tail /ecs/sqs-consumer --follow
+aws logs tail /ecs/<your-log-group-name> --follow
 ```
 
 ## Verifying Results
@@ -275,7 +248,6 @@ The test set contains approximately 114 records (20% of 569), so you should see 
 ## Key Design Notes
 
 - **Two independent DAGs:** `training_pipeline` and `inference_pipeline` are decoupled -- each loads and splits the dataset on its own. The split is identical because both use the same sklearn built-in dataset and `random_state=42`.
-- **No XCom:** each DAG is a single task, keeping the logic simple and debuggable.
 - **At-least-once delivery:** SQS messages are deleted only after the prediction is successfully written to S3. If a consumer task fails mid-processing, the SQS visibility timeout expires and the message becomes visible again for retry.
 - **No write conflicts:** each prediction is stored at a unique S3 key (`predictions/<record_id>.json`), so multiple ECS tasks never overwrite each other.
 - **Long-polling:** the consumer uses `WaitTimeSeconds=20` to reduce SQS API calls and cost.
